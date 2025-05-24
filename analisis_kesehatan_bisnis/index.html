@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Business Health Analysis</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .input-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        input {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Business Health Analysis</h1>
+    
+    <div class="input-group">
+        <label for="pemasukan">Pemasukan (Rp):</label>
+        <input type="number" id="pemasukan" step="1000" value="3000000">
+    </div>
+
+    <div class="input-group">
+        <label for="pengeluaran">Pengeluaran (Rp):</label>
+        <input type="number" id="pengeluaran" step="1000" value="2950000">
+    </div>
+
+    <div class="input-group">
+        <label for="jumlah_transaksi">Jumlah Transaksi:</label>
+        <input type="number" id="jumlah_transaksi" step="1" value="12">
+    </div>
+
+    <div class="input-group">
+        <label for="jumlah_hari_rugi">Jumlah Hari Rugi:</label>
+        <input type="number" id="jumlah_hari_rugi" step="1" value="6">
+    </div>
+
+    <button onclick="analyzeBusiness()">Analyze Business Health</button>
+
+    <div id="result"></div>
+
+    <script>
+        let model;
+        let scalerParams;
+        let labelClasses;
+
+        async function loadModel() {
+            try {
+                model = await tf.loadGraphModel('tfjs_model/model.json');
+                scalerParams = await fetch('/tfjs_model/scaler_params.json').then(r => r.json());
+                console.log('Scaler Params:', scalerParams);
+                labelClasses = await fetch('/tfjs_model/label_classes.json').then(r => r.json());
+                console.log('Model loaded successfully');
+            } catch (error) {
+                console.error('Error loading model:', error);
+                document.getElementById('result').innerHTML = 'Error loading model. Please check the console for details.';
+            }
+        }
+
+        function preprocessInput(data) {
+            const inputTensor = tf.tensor2d([data]);
+
+            const dataMin = tf.tensor1d(scalerParams.data_min_);
+            const dataRange = tf.tensor1d(scalerParams.data_range_);
+
+            if (dataRange.arraySync().some(x => x === 0)) {
+                throw new Error('Scaler data_range_ contains zero, division will cause NaN');
+            }
+
+            return inputTensor.sub(dataMin).div(dataRange);
+        }
+
+        async function analyzeBusiness() {
+            if (!model) {
+                await loadModel();
+            }
+
+            const pemasukan = parseFloat(document.getElementById('pemasukan').value);
+            const pengeluaran = parseFloat(document.getElementById('pengeluaran').value);
+            const jumlah_transaksi = parseFloat(document.getElementById('jumlah_transaksi').value);
+            const jumlah_hari_rugi = parseFloat(document.getElementById('jumlah_hari_rugi').value);
+
+            const rasio_transaksi = jumlah_transaksi / (pengeluaran + 1);
+            const persen_pengeluaran = pengeluaran / (pemasukan + pengeluaran + 1e-9);
+
+            const inputData = [
+                pemasukan,
+                pengeluaran,
+                jumlah_transaksi,
+                jumlah_hari_rugi,
+                rasio_transaksi,
+                persen_pengeluaran
+            ];
+
+            try {
+                console.log('Input Data:', inputData);
+                const preprocessedData = preprocessInput(inputData);
+                const prediction = await model.predict(preprocessedData);
+                const probabilities = await prediction.data();
+                const predictedClassIndex = probabilities.indexOf(Math.max(...probabilities));
+                
+                const resultDiv = document.getElementById('result');
+                resultDiv.innerHTML = `
+                    <h3>Analysis Result:</h3>
+                    <p>Business Health: <strong>${labelClasses[predictedClassIndex]}</strong></p>
+                `;
+
+                preprocessedData.dispose();
+                prediction.dispose();
+            } catch (error) {
+                console.error('Error during prediction:', error);
+                document.getElementById('result').innerHTML = 'Error during prediction. Please check the console for details.';
+            }
+        }
+
+        loadModel();
+    </script>
+</body>
+</html> 
