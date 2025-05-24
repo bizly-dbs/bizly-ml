@@ -38,8 +38,7 @@ file_paths = [
     'umkm_dataset/data_transaksi_umkm_2023.csv',
     'umkm_dataset/data_transaksi_umkm_2024.csv',
     'umkm_dataset/data_transaksi_umkm_2025.csv',
-    'umkm_dataset/data_transaksi_umkm_nasi_padang.csv',
-    'umkm_dataset/data_transaksi_umkm_sinar_baledo.csv'
+    'umkm_dataset/data_transaksi_umkm_nasi_padang.csv'
 ]
 
 dfs = []
@@ -311,13 +310,13 @@ def prediksi_kondisi_keuangan(data_baru: pd.DataFrame):
     label_pred = le.inverse_transform(y_pred_class)
 
     print(">> Hasil kelas:", label_pred)
-    return label_pred[0]
+    return label_pred[0], data_baru['rasio_transaksi'], data_baru['persen_pengeluaran']
 
 # Contoh data baru yang ingin diprediksi
 data_baru = pd.DataFrame([{
-    'pemasukan': 3000000,
-    'pengeluaran': 2950000,
-    'jumlah_transaksi': 12,
+    'pemasukan': 4000000,
+    'pengeluaran': 3950000,
+    'jumlah_transaksi': 10,
     'jumlah_hari_rugi': 6
 }])
 
@@ -328,3 +327,5 @@ print("Prediksi kondisi keuangan:", hasil)
 import shutil
 
 shutil.make_archive('model_tfjs_export', 'zip', 'analisis_kesehatan_bisnis/model_tfjs')
+
+weekly.tail()
