@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ridge Regression - TensorFlow.js Demo</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 30px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+        }
+        .input-group {
+            margin: 15px 0;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            font-size: 16px;
+        }
+        input[type="number"]::-webkit-input-placeholder {
+            color: rgba(255, 255, 255, 0.7);
+        }
+        button {
+            background: linear-gradient(45deg, #FF6B6B, #4ECDC4);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            margin: 10px 5px;
+            transition: transform 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            min-height: 50px;
+        }
+        .loading {
+            color: #4ECDC4;
+        }
+        .error {
+            color: #FF6B6B;
+        }
+        .success {
+            color: #50E3C2;
+        }
+        .model-info {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧠 Ridge Regression</h1>
+        <div class="model-info">
+            <h3>📊 Model Information</h3>
+            <p><strong>Type:</strong> TensorFlow.js (SavedModel Conversion)</p>
+            <p><strong>Status:</strong> <span id="modelStatus">Loading...</span></p>
+            <p><strong>Input Shape:</strong> <span id="inputShape">-</span></p>
+        </div>
+        
+        <h3>🔢 Input Features</h3>
+        <div id="inputsContainer">
+            <!-- Dynamic inputs will be generated here -->
+        </div>
+        
+        <button onclick="predict()">🚀 Predict</button>
+        <button onclick="generateRandomInputs()">🎲 Random Test</button>
+        <button onclick="clearInputs()">🧹 Clear</button>
+        
+        <div class="result" id="result">
+            Ready to make predictions...
+        </div>
+    </div>
+
+    <script>
+        let model = null;
+        let inputShape = null;
+        
+        async function loadModel() {
+            try {
+                document.getElementById('modelStatus').textContent = 'Loading...';
+                document.getElementById('modelStatus').className = 'loading';
+                
+                // Try to load the model
+                model = await tf.loadLayersModel('./model.json');
+                
+                // Get input shape
+                inputShape = model.inputs[0].shape;
+                document.getElementById('inputShape').textContent = inputShape.join(' × ');
+                document.getElementById('modelStatus').textContent = 'Loaded Successfully';
+                document.getElementById('modelStatus').className = 'success';
+                
+                // Generate input fields
+                generateInputFields();
+                
+            } catch (error) {
+                console.error('Error loading model:', error);
+                document.getElementById('modelStatus').textContent = 'Failed to Load';
+                document.getElementById('modelStatus').className = 'error';
+                document.getElementById('result').innerHTML = 
+                    '<div class="error">❌ Failed to load model: ' + error.message + '</div>';
+            }
+        }
+        
+        function generateInputFields() {
+            const container = document.getElementById('inputsContainer');
+            const numFeatures = inputShape[1]; // Assuming shape is [batch, features]
+            
+            container.innerHTML = '';
+            for (let i = 0; i < numFeatures; i++) {
+                const div = document.createElement('div');
+                div.className = 'input-group';
+                div.innerHTML = `
+                    <label for="feature${i}">Feature ${i + 1}:</label>
+                    <input type="number" id="feature${i}" step="any" placeholder="Enter value...">
+                `;
+                container.appendChild(div);
+            }
+        }
+        
+        async function predict() {
+            if (!model) {
+                document.getElementById('result').innerHTML = 
+                    '<div class="error">❌ Model not loaded yet!</div>';
+                return;
+            }
+            
+            try {
+                // Collect input values
+                const numFeatures = inputShape[1];
+                const inputs = [];
+                
+                for (let i = 0; i < numFeatures; i++) {
+                    const value = parseFloat(document.getElementById(`feature${i}`).value);
+                    if (isNaN(value)) {
+                        document.getElementById('result').innerHTML = 
+                            '<div class="error">❌ Please fill all input fields with valid numbers!</div>';
+                        return;
+                    }
+                    inputs.push(value);
+                }
+                
+                // Create tensor and make prediction
+                const inputTensor = tf.tensor2d([inputs]);
+                const prediction = await model.predict(inputTensor);
+                const result = await prediction.data();
+                
+                // Display result
+                document.getElementById('result').innerHTML = `
+                    <div class="success">
+                        <h4>🎯 Prediction Result:</h4>
+                        <p><strong>Value:</strong> ${result[0].toFixed(4)}</p>
+                        <p><strong>Inputs:</strong> [${inputs.map(x => x.toFixed(2)).join(', ')}]</p>
+                    </div>
+                `;
+                
+                // Clean up tensors
+                inputTensor.dispose();
+                prediction.dispose();
+                
+            } catch (error) {
+                console.error('Prediction error:', error);
+                document.getElementById('result').innerHTML = 
+                    '<div class="error">❌ Prediction failed: ' + error.message + '</div>';
+            }
+        }
+        
+        function generateRandomInputs() {
+            const numFeatures = inputShape ? inputShape[1] : 10;
+            for (let i = 0; i < numFeatures; i++) {
+                const randomValue = (Math.random() * 2 - 1) * 10; // Random between -10 and 10
+                document.getElementById(`feature${i}`).value = randomValue.toFixed(2);
+            }
+        }
+        
+        function clearInputs() {
+            const numFeatures = inputShape ? inputShape[1] : 10;
+            for (let i = 0; i < numFeatures; i++) {
+                document.getElementById(`feature${i}`).value = '';
+            }
+            document.getElementById('result').innerHTML = 'Ready to make predictions...';
+        }
+        
+        // Load model when page loads
+        window.onload = loadModel;
+    </script>
+</body>
+</html>

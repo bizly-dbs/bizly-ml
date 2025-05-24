@@ -1025,6 +1025,7 @@ import numpy as np
 import tensorflow as tf
 import joblib
 from datetime import datetime
+import json
 
 def convert_sklearn_to_tensorflow(sklearn_model, model_dir, model_name, n_features, scaler):
     """
@@ -1056,7 +1057,7 @@ def convert_sklearn_to_tensorflow(sklearn_model, model_dir, model_name, n_featur
             print(f"      ✅ Model test successful, output shape: {test_output.shape}")
         except Exception as e:
             print(f"      ⚠️  Model test failed: {e}")
-            return save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_name)
+            return save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_name, n_features)
 
         # Export model in TensorFlow formats
 
@@ -1070,7 +1071,7 @@ def convert_sklearn_to_tensorflow(sklearn_model, model_dir, model_name, n_featur
             print(f"      ✅ TF SavedModel: {saved_model_dir}")
         except Exception as e:
             print(f"      ❌ SavedModel export failed: {e}")
-            return save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_name)
+            return save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_name, n_features)
 
         # 2. Save as native Keras format (.keras) - only for native models
         if model_type == "native":
@@ -1100,31 +1101,17 @@ def convert_sklearn_to_tensorflow(sklearn_model, model_dir, model_name, n_featur
                     f.write(tflite_model)
                 print(f"      ✅ TF TFLite: {tflite_path}")
             except Exception as e:
-                print(f"      ❌ TF TFLite failed (expected for complex models): {str(e)[:100]}...")
-        else:
-            print(f"      ⏭️  TF TFLite skipped (not compatible with wrapper models)")
+                print(f"      ❌ TF TFLite failed: {str(e)[:100]}...")
 
-        # 4. TensorFlow.js (only for native models)
-        if model_type == "native":
-            try:
-                import tensorflowjs as tfjs
-                tfjs_dir = os.path.join(model_dir, 'tf_tfjs')
-                os.makedirs(tfjs_dir, exist_ok=True)
-                tfjs.converters.save_keras_model(tf_model, tfjs_dir)
-                print(f"      ✅ TF TensorFlow.js: {tfjs_dir}")
-            except ImportError:
-                print("      ⚠️  TensorFlow.js not installed")
-            except Exception as e:
-                print(f"      ❌ TF TensorFlow.js failed: {str(e)[:100]}...")
-        else:
-            print(f"      ⏭️  TF TensorFlow.js skipped (not compatible with wrapper models)")
+        # 4. TensorFlow.js conversion
+        convert_to_tensorflowjs(tf_model, saved_model_dir, model_dir, model_name, model_type, n_features)
 
         # Always save alternative formats as backup
-        save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_name)
+        save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_name, n_features)
 
     except Exception as e:
         print(f"      ❌ TensorFlow conversion failed: {e}")
-        return save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_name)
+        return save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_name, n_features)
 
 
 def create_native_tf_linear_model(sklearn_model, scaler, n_features):
@@ -1136,13 +1123,24 @@ def create_native_tf_linear_model(sklearn_model, scaler, n_features):
             super(NativeLinearModel, self).__init__()
 
             # Extract sklearn model parameters
-            self.coef_ = tf.constant(sklearn_model.coef_.reshape(-1, 1), dtype=tf.float32)
-            self.intercept_ = tf.constant(sklearn_model.intercept_, dtype=tf.float32)
+            coef = sklearn_model.coef_
+            if coef.ndim == 1:
+                self.coef_ = tf.constant(coef.reshape(-1, 1), dtype=tf.float32)
+            else:
+                self.coef_ = tf.constant(coef.T, dtype=tf.float32)  # Transpose for matrix multiplication
+
+            # Handle intercept
+            intercept = sklearn_model.intercept_
+            if np.isscalar(intercept):
+                self.intercept_ = tf.constant([intercept], dtype=tf.float32)
+            else:
+                self.intercept_ = tf.constant(intercept, dtype=tf.float32)
 
             # Extract scaler parameters
             self.scaler_mean = tf.constant(scaler.mean_, dtype=tf.float32)
             self.scaler_scale = tf.constant(scaler.scale_, dtype=tf.float32)
 
+        @tf.function
         def call(self, inputs):
             # Apply scaling: (x - mean) / scale
             scaled_inputs = (inputs - self.scaler_mean) / self.scaler_scale
@@ -1172,6 +1170,7 @@ def create_wrapper_tf_model(sklearn_model, scaler, n_features):
             prediction = self.sklearn_model.predict(scaled_input)
             return prediction.astype(np.float32)
 
+        @tf.function
         def call(self, inputs):
             # Use tf.py_function for sklearn models
             prediction = tf.py_function(
@@ -1187,7 +1186,7 @@ def create_wrapper_tf_model(sklearn_model, scaler, n_features):
     return SklearnWrapper(sklearn_model, scaler)
 
 
-def save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_name):
+def save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_name, n_features):
     """
     Save sklearn model in multiple alternative formats
     """
@@ -1198,9 +1197,6 @@ def save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_nam
         try:
             from skl2onnx import convert_sklearn
             from skl2onnx.common.data_types import FloatTensorType
-
-            # Determine the number of features from the scaler
-            n_features = len(scaler.scale_) if hasattr(scaler, 'scale_') else 10
 
             initial_type = [('float_input', FloatTensorType([None, n_features]))]
             onnx_model = convert_sklearn(sklearn_model, initial_types=initial_type)
@@ -1235,7 +1231,7 @@ def save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_nam
                     'model_type': type(sklearn_model).__name__,
                     'coefficients': sklearn_model.coef_.tolist() if hasattr(sklearn_model, 'coef_') else None,
                     'intercept': float(sklearn_model.intercept_) if hasattr(sklearn_model, 'intercept_') else 0.0,
-                    'feature_count': len(sklearn_model.coef_) if hasattr(sklearn_model, 'coef_') else 0,
+                    'feature_count': len(sklearn_model.coef_) if hasattr(sklearn_model, 'coef_') else n_features,
                     'scaler_mean': scaler.mean_.tolist() if hasattr(scaler, 'mean_') else None,
                     'scaler_scale': scaler.scale_.tolist() if hasattr(scaler, 'scale_') else None,
                     'created_at': datetime.now().isoformat()
@@ -1243,80 +1239,60 @@ def save_sklearn_alternative_formats(sklearn_model, scaler, model_dir, model_nam
 
                 json_path = os.path.join(model_dir, f'{model_name.replace(" ", "_").lower()}_params.json')
                 with open(json_path, 'w') as f:
-                    import json
                     json.dump(model_json, f, indent=2)
                 print(f"      ✅ JSON parameters: {json_path}")
         except Exception as e:
             print(f"      ❌ JSON export failed: {str(e)[:50]}...")
 
-        # 4. Create inference script
-        try:
-            create_inference_script(model_dir, model_name, sklearn_model)
-            print(f"      ✅ Inference script created")
-        except Exception as e:
-            print(f"      ❌ Inference script failed: {str(e)[:50]}...")
-
     except Exception as e:
         print(f"      ❌ Alternative formats failed: {e}")
 
 
-def create_inference_script(model_dir, model_name, sklearn_model):
+def convert_to_tensorflowjs(tf_model, saved_model_dir, model_dir, model_name, model_type, n_features):
     """
-    Create a standalone inference script
+    Convert TensorFlow model to TensorFlow.js with multiple methods
     """
-    script_content = f'''#!/usr/bin/env python3
-"""
-Standalone inference script for {model_name}
-Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-"""
+    print(f"      🔄 Converting to TensorFlow.js...")
 
-import joblib
-import numpy as np
+    # Check if tensorflowjs is available
+    try:
+        import tensorflowjs as tfjs
+    except ImportError:
+        print("      ❌ TensorFlow.js not installed. Installing...")
+        try:
+            import subprocess
+            import sys
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "tensorflowjs"])
+            import tensorflowjs as tfjs
+            print("      ✅ TensorFlow.js installed successfully")
+        except Exception as e:
+            print(f"      ❌ Failed to install TensorFlow.js: {e}")
+            return
 
-class ModelInference:
-    def __init__(self, model_path="model.pkl", scaler_path="scaler.pkl"):
-        self.model = joblib.load(model_path)
-        self.scaler = joblib.load(scaler_path)
-        self.model_type = "{type(sklearn_model).__name__}"
+    # Method 1: Direct conversion from Keras model (for native models)
+    if model_type == "native":
+        try:
+            tfjs_dir = os.path.join(model_dir, 'tfjs_from_keras')
+            os.makedirs(tfjs_dir, exist_ok=True)
 
-    def predict(self, features):
-        """
-        Make prediction for given features
+            # Convert directly from Keras model
+            tfjs.converters.save_keras_model(tf_model, tfjs_dir)
+            print(f"      ✅ TF.js (from Keras): {tfjs_dir}")
 
-        Args:
-            features: array-like of shape (n_features,) or (n_samples, n_features)
+        except Exception as e:
+            print(f"      ❌ TF.js (from Keras) failed: {str(e)[:100]}...")
 
-        Returns:
-            prediction: float or array of predictions
-        """
-        features = np.array(features).reshape(1, -1) if np.array(features).ndim == 1 else np.array(features)
-        features_scaled = self.scaler.transform(features)
-        prediction = self.model.predict(features_scaled)
-        return prediction[0] if len(prediction) == 1 else prediction
+    # Method 2: Conversion from SavedModel (works for both native and wrapper)
+    try:
+        tfjs_dir = os.path.join(model_dir, 'tfjs_from_savedmodel')
+        os.makedirs(tfjs_dir, exist_ok=True)
 
-    def predict_batch(self, features_list):
-        """Predict for multiple samples"""
-        features_array = np.array(features_list)
-        features_scaled = self.scaler.transform(features_array)
-        predictions = self.model.predict(features_scaled)
-        return predictions.tolist()
+        # Convert from SavedModel
+        tfjs.converters.convert(saved_model_dir, tfjs_dir)
+        print(f"      ✅ TF.js (from SavedModel): {tfjs_dir}")
 
-# Example usage
-if __name__ == "__main__":
-    # Initialize inference
-    inference = ModelInference()
-
-    # Example prediction (replace with actual feature values)
-    sample_features = [0.5] * {len(sklearn_model.coef_) if hasattr(sklearn_model, 'coef_') else 10}
-    result = inference.predict(sample_features)
-
-    print(f"Model: {{inference.model_type}}")
-    print(f"Sample prediction: {{result}}")
-'''
-
-    script_path = os.path.join(model_dir, 'inference.py')
-    with open(script_path, 'w') as f:
-        f.write(script_content)
+    except Exception as e:
+        print(f"      ❌ TF.js (from SavedModel) failed: {str(e)[:100]}...")
 
 
 
@@ -1637,7 +1613,24 @@ print(f"🥇 Best model: {final_results.iloc[0]['Model'] if not final_results.em
 print(f"📊 Dataset processed: {len(daily_sales)} days of sales data")
 print(f"🔮 Ready for production forecasting!")
 
+import zipfile
+import os
 
+# Tentukan path ke folder SavedModel Anda
+saved_model_dir = '/content/exported_models/model_3_Ridge_Regression/tfjs_from_keras'  # Ganti dengan path folder model Anda
+
+# Tentukan nama file ZIP untuk arsip
+zip_filename = '/content/exported_models/model_3_Ridge_Regression/tfjs_RR.zip'
+
+# Mengarsipkan folder SavedModel menjadi file ZIP
+with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+    # Menelusuri seluruh folder dan menambahkan ke file ZIP
+    for root, dirs, files in os.walk(saved_model_dir):
+        for file in files:
+            zipf.write(os.path.join(root, file),
+                       os.path.relpath(os.path.join(root, file), saved_model_dir))
+
+print(f"Model telah diarsipkan sebagai {zip_filename}")
 
 
 
